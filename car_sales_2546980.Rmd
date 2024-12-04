@@ -1,0 +1,486 @@
+---
+title: "MGRCM0034_Individual_Project_2546980"
+output:
+  html_document: default
+  word_document: default
+date: "2024-12-03"
+---
+
+```{r Data}
+# Load required libraries
+library(readr)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(caret)
+library(outliers)
+library(viridis)
+library(tidyr)
+library(Rtsne)
+library(forcats)
+library(scales)
+library(lubridate)
+library(umap)
+library(MASS)
+library(cluster)
+library(stats)
+library(broom)
+library(RColorBrewer)
+```
+
+
+```{r}
+# Download the dataset from GitHub
+url <- "https://raw.githubusercontent.com/fongbubble/UoB_MGRCM0034_Car_Sales/main/car_sales.csv"
+csv_file_path <- tempfile(fileext = ".csv")
+download.file(url, destfile = csv_file_path)
+print(paste("CSV File Path:", csv_file_path))
+
+# Read the CSV file
+df <- read_csv(csv_file_path)
+head(df, 5)
+```
+
+```{r}
+# Convert Date to proper Date type for m/d/y format
+df$Date <- as.Date(df$Date, format = "%m/%d/%Y")
+
+# Replace '5-Sep' with '9-5' and '3-Sep' with '9-3' in the 'Model' column using mutate
+df <- df %>%
+  mutate(Model = gsub('5-Sep', '9-5', gsub('3-Sep', '9-3', Model)))
+
+colnames(df)[colnames(df) == "Price ($)"] <- "Price"
+colnames(df)[colnames(df) == "Annual Income"] <- "Annual_Income"
+```
+
+```{r}
+# Count the number of missing values in each column
+missing_values_per_column <- colSums(is.na(df))
+print(missing_values_per_column)
+```
+
+```{r}
+str(df)
+```
+
+```{r}
+# Check for missing values in the dataset
+sum(is.na(df))
+
+# Check for duplicate rows in the dataset
+sum(duplicated(df))
+
+# Display unique summary for each column
+summary(df)
+```
+
+```{r Label Encoder}
+# List of categorical columns to encode
+categorical_columns <- c("Car_id", "Customer Name", "Gender", "Dealer_Name", 
+                         "Company", "Model", "Engine", "Transmission", 
+                         "Color", "Dealer_No", "Body Style", "Dealer_Region")
+
+# Apply label encoding to each categorical column
+df_encoded <- df %>%
+  mutate(across(all_of(categorical_columns), ~ as.integer(factor(.))))
+```
+
+```{r}
+# Exclude the 'Date' column from df_encoded using base R
+df_numeric <- df_encoded[, !names(df_encoded) %in% "Date"]
+```
+
+```{r}
+# Use the preProcess function from the caret package to standardize the data
+preProc <- preProcess(df_numeric, method = c("center", "scale"))
+df_std <- predict(preProc, newdata = df_numeric)
+```
+
+```{r}
+df_selected <- df_std[, c("Annual_Income", "Price", "Company", "Model")]
+df_selected <- unique(df_selected)  # Remove duplicate rows
+```
+
+```{r}
+# Calculate the average price by month over years
+df_monthly_avg <- df %>%
+  group_by(Month = floor_date(Date, "month")) %>%
+  summarise(Average_Price = mean(Price, na.rm = TRUE)) %>% filter(!is.na(Average_Price))
+
+# Step 2: Plot the time series with color changes and a regression line
+# Define segments for rising and falling lines
+ggplot(df_monthly_avg, aes(x = Month, y = Average_Price)) +
+  geom_segment(data = df_monthly_avg %>% mutate(Next_Avg = lead(Average_Price), Change = ifelse(Average_Price < lead(Average_Price), 'Up', 'Down')), 
+               aes(xend = lead(Month), yend = Next_Avg, color = Change),
+               size = 1) +
+  scale_color_manual(values = c("Up" = "green", "Down" = "red")) +
+  geom_smooth(method = "lm", color = "darkgoldenrod", linetype = "dashed", se = FALSE) +  # Add regression line in yellow
+  theme_minimal() +
+  ggtitle("Average Monthly Price Over Years") +
+  xlab("Month") +
+  ylab("Average Price") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+```
+
+
+```{r}
+# Filter the top 5 popular car brands
+top_5_brands <- names(sort(table(df$Company), decreasing = TRUE)[1:5])
+df_top_5 <- df[df$Company %in% top_5_brands, ]
+
+# Create a boxplot for the top 5 popular car brands to visualize price distribution
+ggplot(df_top_5, aes(x = Company, y = Price, fill = Company)) +
+  scale_fill_brewer(palette = "Spectral") +
+  geom_boxplot() +
+  ggtitle("Price Distribution of Top 5 Popular Car Brands") +
+  xlab("Car Company") +
+  ylab("Price") +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 18, face = "bold"),
+    legend.position = "none"
+  )
+```
+
+```{r}
+# Summarize data by Company
+company_summary <- df %>%
+  group_by(Company) %>%
+  summarise(
+    Avg_Price = mean(Price, na.rm = TRUE),          
+    Avg_Annual_Income = mean(Annual_Income, na.rm = TRUE), 
+    Count = n()  # Frequency of each Company
+  )
+
+# Plot Bubble Chart with Annual Income, Price, and Company frequency as bubble size
+ggplot(company_summary, aes(x = Avg_Annual_Income, y = Avg_Price, size = Count, fill = Company)) +
+  geom_point(alpha = 0.6, shape = 21, color = "black") +  
+  scale_size(range = c(3, 15)) + 
+  scale_fill_viridis_d(option = "plasma") + 
+  theme_minimal() +
+  ggtitle("Bubble Chart of Price vs Annual Income by Company") +
+  labs(x = "Average Annual Income ($)", y = "Average Price ($)", size = "Number of Cars", fill = "Company") +
+  theme(
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 13, face = "bold")
+  )
+```
+
+```{r}
+# Calculate the correlation matrix for standardized data
+cor_matrix <- cor(df_std, use = "pairwise.complete.obs")
+cor_melted <- melt(cor_matrix)
+
+ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value, size = abs(value))) +
+  geom_point(shape = 21, color = "black", alpha = 0.8) +
+  scale_fill_viridis(option = "plasma", limits = c(-1, 1), guide = "colorbar") +
+  scale_size(range = c(1, 7)) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    legend.position = "right"
+  ) +
+  labs(
+    title = "Bubble Correlation Heatmap",
+    x = "",
+    y = "",
+    fill = "Correlation",
+    size = "Absolute Correlation"
+  )
+```
+
+```{r}
+# Rank Companies by Count (Frequency)
+company_count <- df %>%
+  group_by(Company) %>%
+  summarise(Count = n()) %>%
+  arrange(desc(Count)) %>%
+  mutate(Rank = row_number())
+
+# Plot the ranking of companies with Plasma colors indicating rank
+ggplot(company_count, aes(x = reorder(Company, -Count), y = Count, fill = Rank)) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_c(option = "plasma", direction = -1) + 
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    legend.position = "right"
+  ) +
+  ggtitle("Ranking of Car Brand Popularity") +
+  labs(x = "Car Brand", y = "Amount", fill = "Rank")
+```
+
+```{r}
+body_transmission_summary <- df %>%
+  group_by(`Body Style`, Transmission) %>%
+  summarise(Count = n()) %>%
+  ungroup()
+
+# Plot the stacked bar chart using Spectral colors
+ggplot(body_transmission_summary, aes(x = `Body Style`, y = Count, fill = Transmission)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_brewer(palette = "Spectral") +  
+  theme_minimal() +
+  ggtitle("Stacked Bar Chart of Body Style by Transmission Type") +
+  labs(x = "Body Style", y = "Count", fill = "Transmission") +
+  theme(
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1),  
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold")
+  )
+```
+
+```{r}
+set.seed(24150)
+
+# Run t-SNE on the Selected Variables
+tsne_results <- Rtsne(
+  df_selected,
+  dims = 2,      
+  perplexity = 30,  
+  verbose = TRUE,    
+  max_iter = 500    
+)
+
+# Extract t-SNE Embeddings and Apply K-Means Clustering
+embedding <- as.data.frame(tsne_results$Y)
+colnames(embedding) <- c("Dim1", "Dim2")
+
+# Apply K-Means clustering to the t-SNE results to identify clusters
+kmeans_res <- kmeans(embedding, centers = 9)
+embedding$Cluster <- factor(kmeans_res$cluster)
+
+custom_cluster_names <- c(
+  "Mid-Income, Brand-Focused Buyers",
+  "High-Income, Luxury Seekers",
+  "High-Income, Cost-Conscious Buyers",
+  "Low-Income, Practical Buyers",
+  "Low-Income, Value-Driven Buyers",
+  "Mid-Income, Budget-Conscious Buyers",
+  "High-Income, Brand-Focused Buyers",
+  "Low-Income, Budget-Focused Buyers",
+  "Mid-Income, Practical Buyers"
+)
+
+cluster_order <- c(
+  # High-Income Groups
+  "High-Income, Luxury Seekers",
+  "High-Income, Brand-Focused Buyers",
+  "High-Income, Cost-Conscious Buyers",
+
+  # Mid-Income Groups
+  "Mid-Income, Brand-Focused Buyers",
+  "Mid-Income, Practical Buyers",
+  "Mid-Income, Budget-Conscious Buyers",
+
+  # Low-Income Groups
+  "Low-Income, Value-Driven Buyers",
+  "Low-Income, Practical Buyers",
+  "Low-Income, Budget-Focused Buyers"
+)
+
+embedding$Cluster <- factor(embedding$Cluster, levels = 1:9, labels = custom_cluster_names)
+embedding$Cluster <- factor(embedding$Cluster, levels = cluster_order)
+
+# Visualize the t-SNE Results Using ggplot2
+ggplot(embedding, aes(x = Dim1, y = Dim2, color = Cluster)) +
+  geom_point(alpha = 0.7, size = 3) +
+  scale_color_brewer(palette = "Spectral") + 
+  ggtitle("t-SNE with K-means Clustering") +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold")
+  ) +
+  guides(
+    color = guide_legend(title = "Cluster Groups", override.aes = list(order = cluster_order))
+  )
+```
+
+```{r}
+set.seed(24150)
+
+# Perform PCA on the selected variables matrix
+pca_result <- prcomp(df_selected, center = TRUE, scale. = TRUE)
+
+# Extract the first two principal components
+pca_data <- as.data.frame(pca_result$x[, 1:2])
+colnames(pca_data) <- c("PC1", "PC2")
+
+# Flip the direction of PC1 or PC2
+pca_data$PC1 <- -pca_data$PC1
+pca_data$PC2 <- -pca_data$PC2
+
+# Apply K-Means clustering on the PCA results
+kmeans_res <- kmeans(pca_data, centers = 9)
+pca_data$Cluster <- factor(kmeans_res$cluster)
+
+custom_cluster_names <- c(
+  "High-Income, Cost-Conscious Buyers",
+  "Mid-Income, Practical Buyers",
+  "High-Income, Brand-Focused Buyers",
+  "Low-Income, Practical Buyers",
+  "Mid-Income, Budget-Conscious Buyers",
+  "Low-Income, Budget-Focused Buyers",
+  "High-Income, Luxury Seekers",
+  "Low-Income, Value-Driven Buyers",
+  "Mid-Income, Brand-Focused Buyers"
+)
+
+cluster_order <- c(
+  # High-Income Groups
+  "High-Income, Luxury Seekers",
+  "High-Income, Brand-Focused Buyers",
+  "High-Income, Cost-Conscious Buyers",
+
+  # Mid-Income Groups
+  "Mid-Income, Brand-Focused Buyers",
+  "Mid-Income, Practical Buyers",
+  "Mid-Income, Budget-Conscious Buyers",
+
+  # Low-Income Groups
+  "Low-Income, Value-Driven Buyers",
+  "Low-Income, Practical Buyers",
+  "Low-Income, Budget-Focused Buyers"
+)
+
+pca_data$Cluster <- factor(pca_data$Cluster, levels = 1:9, labels = custom_cluster_names)
+pca_data$Cluster <- factor(pca_data$Cluster, levels = cluster_order)
+
+# Add Centroids to the PCA Data
+centroids <- as.data.frame(kmeans_res$centers)
+colnames(centroids) <- c("PC1", "PC2")
+centroids$Cluster <- factor(1:9, labels = custom_cluster_names)
+centroids$Cluster <- factor(centroids$Cluster, levels = cluster_order)
+
+# Create a Grid for Decision Boundaries
+grid_size <- 0.05
+x_min <- min(pca_data$PC1) - 1
+x_max <- max(pca_data$PC1) + 1
+y_min <- min(pca_data$PC2) - 1
+y_max <- max(pca_data$PC2) + 1
+
+# Create a grid of points covering the range of the data
+grid <- expand.grid(PC1 = seq(x_min, x_max, by = grid_size),
+                    PC2 = seq(y_min, y_max, by = grid_size))
+
+# Custom function to predict clusters based on centroids using Euclidean distance
+predict_kmeans <- function(new_data, centroids) {
+  distance_matrix <- matrix(NA, nrow = nrow(new_data), ncol = nrow(centroids))
+  
+  for (i in 1:nrow(centroids)) {
+    distance_matrix[, i] <- sqrt((new_data$PC1 - centroids$PC1[i])^2 + 
+                                 (new_data$PC2 - centroids$PC2[i])^2)
+  }
+  
+  cluster_assignments <- max.col(-distance_matrix)  # Negative for finding the minimum distance
+  return(cluster_assignments)
+}
+
+# Predict cluster assignment for each grid point
+grid$Cluster <- factor(predict_kmeans(grid, centroids), levels = 1:9, labels = custom_cluster_names)
+grid$Cluster <- factor(grid$Cluster, levels = cluster_order)
+
+# Visualize the PCA with K-Means clustering using ggplot2
+ggplot() +
+  geom_tile(data = grid, aes(x = PC1, y = PC2, fill = Cluster), alpha = 0.15) +  # Use lighter fill for cluster areas
+  geom_point(data = pca_data, aes(x = PC1, y = PC2, color = Cluster), alpha = 0.8, size = 2.5) +
+  scale_fill_brewer(palette = "Spectral") +
+  scale_color_brewer(palette = "Spectral") +
+
+  # Plot centroids with red star markers to clearly denote them
+  geom_point(data = centroids, aes(x = PC1, y = PC2), size = 4, shape = 8, color = "red") +
+
+  ggtitle("PCA with K-Means Clustering") +
+  xlab("PC1: Car Preference & Affordability Component") +
+  ylab("PC2: Income Component") +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 14),
+    legend.title = element_text(size = 12),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 18, face = "bold")
+  ) +
+  guides(
+    fill = guide_legend(title = "Cluster Areas and Labels"), 
+    color = guide_legend(title = "Cluster Areas and Labels")
+  )
+```
+```{r}
+loadings <- as.data.frame(pca_result$rotation[, 1:2])  # Extract loadings for PC1 and PC2
+
+# Flipping the signs of PC1 and/or PC2 
+loadings$PC1 <- -loadings$PC1
+loadings$PC2 <- -loadings$PC2
+
+
+loadings$Variable <- rownames(loadings)
+loadings_long <- loadings %>%
+  pivot_longer(cols = c(PC1, PC2), names_to = "Component", values_to = "Contribution")
+
+# Define the color palette using the Spectral palette
+spectral_palette <- brewer.pal(n = length(unique(loadings_long$Variable)), name = "Spectral")
+
+# Plot bar chart to visualize the contribution of each variable to PC1 and PC2
+ggplot(loadings_long, aes(x = Component, y = Contribution, fill = Variable)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = spectral_palette) +  # Apply Spectral palette
+  ggtitle("Feature Contribution to Each Principal Component") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.title = element_text(size = 12),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold")
+  ) +
+  labs(x = "Principal Components", y = "Contribution") +
+  guides(fill = guide_legend(title = "Features"))
+```
+```{r}
+# Combine original variables with PCA cluster information
+selected_vars <- as.data.frame(df_selected)
+
+selected_vars$Cluster <- pca_data$Cluster
+
+# Calculate average value of each variable for each cluster group
+cluster_summary <- selected_vars %>%
+  group_by(Cluster) %>%
+  summarise(across(c(Annual_Income, Price), mean, na.rm = TRUE))
+
+# Reshape the data to long format for plotting
+cluster_summary_long <- cluster_summary %>%
+  pivot_longer(cols = -Cluster, names_to = "Variable", values_to = "Average_Value")
+
+# Plot the bar chart showing the average value of each variable for each cluster group
+ggplot(cluster_summary_long, aes(x = Variable, y = Average_Value, fill = Cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_brewer(palette = "Spectral") + 
+  theme_minimal() +
+  ggtitle("Annual Income and Price Across Cluster Groups") +
+  xlab("Variables") +
+  ylab("Value") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.position = "right"
+  )
+```
+
+
